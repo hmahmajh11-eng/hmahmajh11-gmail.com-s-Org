@@ -3,31 +3,37 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { ExtractionResponse } from "../types";
 
 const SYSTEM_INSTRUCTION = `
-You are an elite, high-precision Data Extraction Specialist. Your mission is to perform EXHAUSTIVE extraction from documents (invoices, receipts, forms, reports) with 100% fidelity.
+You are a high-precision Data Extraction Specialist with advanced expertise in reconstructing complex table structures from unstructured documents. Your primary goal is to transform visual and OCR data into clean, structured business records.
 
-CRITICAL RULES FOR EXTRACTION:
-1. NO OMISSIONS: You must extract EVERY single data point found. If an invoice has 50 line items, you must produce 50 rows. Do not summarize or say "See original".
-2. DENORMALIZATION: For spreadsheets, every row must be self-contained. If a document has "header" info (e.g., Invoice Number, Date, Vendor Name, Total Amount) and multiple "line items", you MUST include the header info in EVERY object in the "extracted_data" array.
-3. EXACT TEXT: Transfer text exactly as it appears. Do not fix typos found in the document, do not reformat dates unless they are ambiguous, and do not change currency symbols.
-4. UNSTRUCTURED DATA: If you find relevant information in the margins, footers, or notes, create logical columns for them (e.g., "Notes", "Terms_and_Conditions").
-5. OCR FUSION: If supplemental OCR text is provided, use it to cross-reference and verify visual findings. If an image is blurry but the OCR text provides a clear string, use the OCR string for accuracy.
-6. MISSING DATA: Use "N/A" only if a specific field is absolutely not present in the document.
+CRITICAL RULES FOR COMPLEX TABLE PARSING:
+1. SPATIAL ALIGNMENT: Analyze the visual layout. Use the horizontal and vertical alignment of text to identify columns, even if grid lines are missing.
+2. MULTI-LINE ROW RECONSTRUCTION: Some table rows wrap across multiple text lines (e.g., a long product description). You must intelligently group these fragments into a single row object. Do NOT split a single physical row into multiple JSON objects.
+3. HEADER DETECTION: Correctively identify table headers even if they are abbreviated (e.g., 'Qty' for 'Quantity', 'Ref' for 'Reference').
+4. CROSS-COLUMN VALIDATION: If the table contains mathematical relationships (e.g., Quantity * Unit Price = Line Total), use these to verify the accuracy of the extracted numbers. If there's a discrepancy, prioritize the visual data but ensure the output is logically consistent.
+5. EXHAUSTIVE EXTRACTION: Extract EVERY row. If a document spans multiple pages with a continuous table, continue the extraction seamlessly.
+6. DENORMALIZATION: Global document headers (Invoice Date, Vendor, Invoice #) MUST be repeated in every row of the line-item table for spreadsheet readiness.
+7. IGNORE NOISE: Do not extract page numbers, decorative elements, or "continued on next page" markers as data rows.
+
+BUSINESS DATA FOCUS:
+Prioritize Product Codes/SKUs, Names/Descriptions, Quantities, Units, Prices, Discounts, and Totals.
 
 JSON STRUCTURE:
 Return ONLY a JSON object with this exact structure:
 {
   "extracted_data": [
     {
-      "Global_Header_1": "Value",
-      "Line_Item_Field_A": "Value",
-      "Line_Item_Field_B": "Value"
-    },
-    ...
+      "Reference": "Value",
+      "Description": "Value",
+      "Quantity": "Value",
+      "Unit_Price": "Value",
+      "Total": "Value",
+      ... (include relevant headers)
+    }
   ]
 }
 
-Ensure all column keys are descriptive and use snake_case or PascalCase consistently.
-Do not provide any preamble, markdown code blocks, or post-extraction commentary. Just the JSON.
+If no table is found, extract the key-value pairs from the document into a single-row array.
+Do not provide any preamble or markdown formatting. Just the raw JSON.
 `;
 
 export const extractDataFromDocument = async (
@@ -48,16 +54,16 @@ export const extractDataFromDocument = async (
 
   if (ocrText && ocrText.trim()) {
     parts.push({
-      text: `SUPPLEMENTAL OCR TEXT LAYER (FOR REFERENCE AND VERIFICATION):\n\n${ocrText}`
+      text: `SUPPLEMENTAL OCR TEXT (Use this to verify visual strings, especially for small font table data):\n\n${ocrText}`
     });
   }
 
   parts.push({
-    text: "MANDATORY: Extract ALL data from this document. Do not leave out any details, line items, or small-print information. Denormalize all global headers into every row of the line items.",
+    text: "MANDATORY: Perform deep analysis of any table structures. Ensure multi-line descriptions are correctly merged into their respective rows. Extract ALL product and financial line items without exception.",
   });
 
   const response = await ai.models.generateContent({
-    model: 'gemini-3-pro-preview', // Upgraded to Pro for maximum extraction accuracy
+    model: 'gemini-3-pro-preview',
     contents: [
       {
         parts: parts,
@@ -66,7 +72,7 @@ export const extractDataFromDocument = async (
     config: {
       systemInstruction: SYSTEM_INSTRUCTION,
       responseMimeType: "application/json",
-      temperature: 0.1, // Low temperature for high precision
+      temperature: 0.1, // Near-zero temperature for maximum structural consistency
     },
   });
 
@@ -74,11 +80,10 @@ export const extractDataFromDocument = async (
   if (!text) throw new Error("Empty response from AI");
   
   try {
-    // Robust cleaning of the response string
     const jsonString = text.trim().replace(/^```json\s*|```$/g, '');
     return JSON.parse(jsonString) as ExtractionResponse;
   } catch (error) {
     console.error("Failed to parse JSON response:", text);
-    throw new Error("The AI failed to generate a valid structured response. Please try with a higher-quality image or different document.");
+    throw new Error("The AI failed to reconstruct the document structure into a valid JSON format. This usually happens with extremely complex or low-quality scans.");
   }
 };

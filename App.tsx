@@ -16,7 +16,9 @@ import {
   RotateCcw,
   Check,
   Settings2,
-  Save
+  Save,
+  AlertTriangle,
+  Briefcase
 } from 'lucide-react';
 import { ExtractionStatus, ExtractedItem, FileData } from './types';
 import { extractDataFromDocument } from './services/geminiService';
@@ -102,9 +104,34 @@ const CameraModal: React.FC<{
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [currentDevice, setCurrentDevice] = useState<string>('');
+  const [cameraError, setCameraError] = useState<string | null>(null);
+
+  const startCamera = async (deviceId?: string) => {
+    try {
+      setCameraError(null);
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
+
+      const constraints: MediaStreamConstraints = {
+        video: deviceId 
+          ? { deviceId: { ideal: deviceId } } 
+          : { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+      };
+
+      const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+      setStream(newStream);
+      if (videoRef.current) {
+        videoRef.current.srcObject = newStream;
+      }
+    } catch (err: any) {
+      console.error("Camera error:", err);
+      setCameraError(err.message || "Could not access camera. Please ensure you have granted permission.");
+    }
+  };
 
   useEffect(() => {
-    const initCamera = async () => {
+    const init = async () => {
       try {
         const allDevices = await navigator.mediaDevices.enumerateDevices();
         const videoDevices = allDevices.filter(d => d.kind === 'videoinput');
@@ -112,22 +139,13 @@ const CameraModal: React.FC<{
         
         const backCamera = videoDevices.find(d => d.label.toLowerCase().includes('back')) || videoDevices[0];
         if (backCamera) setCurrentDevice(backCamera.deviceId);
-
-        const newStream = await navigator.mediaDevices.getUserMedia({
-          video: { 
-            deviceId: backCamera ? { exact: backCamera.deviceId } : undefined,
-            facingMode: backCamera ? undefined : 'environment',
-            width: { ideal: 1920 },
-            height: { ideal: 1080 }
-          }
-        });
-        setStream(newStream);
-        if (videoRef.current) videoRef.current.srcObject = newStream;
+        
+        await startCamera(backCamera?.deviceId);
       } catch (err) {
-        console.error("Camera error:", err);
+        setCameraError("Failed to list camera devices.");
       }
     };
-    initCamera();
+    init();
 
     return () => {
       stream?.getTracks().forEach(track => track.stop());
@@ -140,13 +158,7 @@ const CameraModal: React.FC<{
     const nextIndex = (currentIndex + 1) % devices.length;
     const nextDevice = devices[nextIndex];
     setCurrentDevice(nextDevice.deviceId);
-
-    stream?.getTracks().forEach(track => track.stop());
-    const newStream = await navigator.mediaDevices.getUserMedia({
-      video: { deviceId: { exact: nextDevice.deviceId } }
-    });
-    setStream(newStream);
-    if (videoRef.current) videoRef.current.srcObject = newStream;
+    await startCamera(nextDevice.deviceId);
   };
 
   const capture = () => {
@@ -179,12 +191,27 @@ const CameraModal: React.FC<{
           <X size={20} />
         </button>
 
-        {!capturedImage ? (
+        {cameraError ? (
+          <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-4">
+            <div className="w-16 h-16 bg-red-500/10 rounded-full flex items-center justify-center text-red-500">
+              <AlertTriangle size={32} />
+            </div>
+            <h3 className="text-white text-lg font-bold">Camera Access Error</h3>
+            <p className="text-slate-400 text-sm max-w-xs">{cameraError}</p>
+            <button 
+              onClick={() => startCamera(currentDevice)}
+              className="px-6 py-2 bg-blue-600 text-white rounded-full font-semibold hover:bg-blue-700 transition-colors"
+            >
+              Try Again
+            </button>
+          </div>
+        ) : !capturedImage ? (
           <div className="relative flex-1 bg-black flex items-center justify-center overflow-hidden">
             <video 
               ref={videoRef} 
               autoPlay 
               playsInline 
+              muted
               className="w-full h-full object-cover"
             />
             <div className="absolute inset-0 border-[2px] border-white/20 m-12 rounded-xl flex items-center justify-center pointer-events-none">
@@ -237,7 +264,7 @@ const CameraModal: React.FC<{
       </div>
       <canvas ref={canvasRef} className="hidden" />
       
-      <p className="mt-4 text-white/60 text-sm font-medium">Position your document within the frame</p>
+      {!cameraError && <p className="mt-4 text-white/60 text-sm font-medium">Position your document within the frame</p>}
 
       <style>{`
         @keyframes scan {
@@ -299,7 +326,7 @@ const App: React.FC = () => {
 
   const handleCameraCapture = (base64: string) => {
     const timestamp = new Date().toLocaleTimeString().replace(/:/g, '-');
-    addFileToQueue(base64, 'image/jpeg', `Camera_Scan_${timestamp}.jpg`);
+    addFileToQueue(base64, 'image/jpeg', `Scan_${timestamp}.jpg`);
   };
 
   const removeFile = (id: string) => {
@@ -335,21 +362,15 @@ const App: React.FC = () => {
             }
             setFiles(prev => prev.map((f, idx) => idx === i ? { ...f, ocrStatus: 'done' } : f));
           } catch (ocrErr) {
-            console.warn('OCR Step Failed, continuing with visual analysis only:', ocrErr);
+            console.warn('OCR Failed:', ocrErr);
             setFiles(prev => prev.map((f, idx) => idx === i ? { ...f, ocrStatus: 'error' } : f));
           }
-        } else {
-          setFiles(prev => prev.map((f, idx) => idx === i ? { ...f, ocrStatus: 'skipped' } : f));
         }
 
         const result = await extractDataFromDocument(files[i].base64, files[i].mimeType, ocrText);
         
-        const rowsWithMetadata = result.extracted_data.map(item => ({
-          ...item,
-          'Source_File': files[i].name
-        }));
-        
-        allExtractedData.push(...rowsWithMetadata);
+        // No longer adding Source_File to focus on clean data
+        allExtractedData.push(...result.extracted_data);
         setFiles(prev => prev.map((f, idx) => idx === i ? { ...f, status: 'completed' } : f));
       } catch (err: any) {
         console.error(`Error processing ${files[i].name}:`, err);
@@ -361,7 +382,6 @@ const App: React.FC = () => {
     setStatus(ExtractionStatus.SUCCESS);
     setCurrentFileIndex(-1);
 
-    // Initialize mapping with defaults
     if (allExtractedData.length > 0) {
       const keys = Object.keys(allExtractedData[0]);
       const initialMapping: Record<string, string> = {};
@@ -375,7 +395,6 @@ const App: React.FC = () => {
   const handleExport = () => {
     if (data.length === 0) return;
 
-    // Apply mapping to data
     const mappedData = data.map(item => {
       const newItem: ExtractedItem = {};
       Object.keys(item).forEach(key => {
@@ -385,7 +404,7 @@ const App: React.FC = () => {
       return newItem;
     });
 
-    downloadAsExcel(mappedData, `Batch_Extraction_${new Date().toISOString().split('T')[0]}.xlsx`);
+    downloadAsExcel(mappedData, `Extracted_Data_${new Date().toISOString().split('T')[0]}.xlsx`);
   };
 
   const reset = () => {
@@ -398,7 +417,7 @@ const App: React.FC = () => {
   };
 
   const originalHeaders = data.length > 0 
-    ? Array.from(new Set(['Source_File', ...Object.keys(data[0]).filter(k => k !== 'Source_File')])) 
+    ? Array.from(new Set(Object.keys(data[0]))) 
     : [];
 
   return (
@@ -426,7 +445,7 @@ const App: React.FC = () => {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="bg-blue-600 p-2 rounded-lg shadow-sm shadow-blue-200">
-              <FileText className="text-white w-5 h-5" />
+              <Briefcase className="text-white w-5 h-5" />
             </div>
             <h1 className="text-xl font-bold tracking-tight text-slate-800">DocuExtract Pro</h1>
           </div>
@@ -455,7 +474,6 @@ const App: React.FC = () => {
                 <button
                   onClick={() => setShowMappingModal(true)}
                   className="flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg font-medium transition-all border border-slate-200"
-                  title="Customize Column Headers"
                 >
                   <Settings2 size={18} />
                   <span className="hidden md:inline">Headers</span>
@@ -544,9 +562,6 @@ const App: React.FC = () => {
                         <p className="text-sm font-medium text-slate-700 truncate">{file.name}</p>
                         <div className="flex items-center gap-2">
                            <p className="text-[10px] text-slate-400 uppercase font-mono">{file.mimeType.split('/')[1]}</p>
-                           {file.ocrStatus === 'running' && <span className="text-[9px] bg-blue-100 text-blue-600 px-1 rounded animate-pulse font-bold tracking-tighter">OCR PHASE</span>}
-                           {file.ocrStatus === 'done' && <span className="text-[9px] text-green-600 font-bold flex items-center gap-0.5 tracking-tighter"><Scan size={8}/> OCR READY</span>}
-                           {file.ocrStatus === 'error' && <span className="text-[9px] text-amber-600 font-bold flex items-center gap-0.5 tracking-tighter"><AlertCircle size={8}/> OCR FAILED</span>}
                         </div>
                       </div>
                     </div>
@@ -564,7 +579,7 @@ const App: React.FC = () => {
                 {files.length === 0 && (
                   <div className="text-center py-12 px-4 border border-dashed border-slate-200 rounded-xl bg-slate-50/50">
                     <Files className="mx-auto w-8 h-8 text-slate-300 mb-2 opacity-50" />
-                    <p className="text-slate-400 text-sm italic">Queue is currently empty</p>
+                    <p className="text-slate-400 text-sm italic">Queue is empty</p>
                   </div>
                 )}
               </div>
@@ -572,52 +587,49 @@ const App: React.FC = () => {
               {files.length > 0 && status !== ExtractionStatus.PROCESSING && (
                 <button
                   onClick={processBatch}
-                  className="w-full mt-6 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-xl transition-all shadow-md active:scale-[0.98] flex items-center justify-center gap-2 group"
+                  className="w-full mt-6 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-xl transition-all shadow-md active:scale-[0.98] flex items-center justify-center gap-2"
                 >
-                  <Scan size={18} className="group-hover:rotate-12 transition-transform" />
-                  Extract from {files.length} {files.length === 1 ? 'Doc' : 'Docs'}
+                  <Scan size={18} />
+                  Extract Data
                 </button>
               )}
 
               {status === ExtractionStatus.PROCESSING && (
                 <div className="mt-6 p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
                   <div className="flex justify-between text-xs font-bold text-blue-600 uppercase tracking-wide">
-                    <span>{files[currentFileIndex]?.ocrStatus === 'running' ? 'Running OCR Engine...' : 'Gemini AI Analysis...'}</span>
+                    <span>{files[currentFileIndex]?.ocrStatus === 'running' ? 'Running OCR...' : 'Extracting Data...'}</span>
                     <span>{currentFileIndex + 1} / {files.length}</span>
                   </div>
                   <div className="w-full bg-slate-200 rounded-full h-1.5 overflow-hidden">
                     <div 
-                      className="bg-blue-500 h-full transition-all duration-700 ease-out shadow-[0_0_10px_rgba(59,130,246,0.5)]"
-                      style={{ width: `${((currentFileIndex + (files[currentFileIndex]?.ocrStatus === 'running' ? 0.3 : 0.8)) / files.length) * 100}%` }}
+                      className="bg-blue-500 h-full transition-all duration-700 ease-out"
+                      style={{ width: `${((currentFileIndex + 0.5) / files.length) * 100}%` }}
                     />
                   </div>
-                  <p className="text-[10px] text-center text-slate-400 italic">
-                    Reading: {files[currentFileIndex]?.name}
-                  </p>
                 </div>
               )}
             </div>
 
             <div className="bg-slate-900 text-slate-300 p-6 rounded-2xl shadow-xl">
               <h3 className="text-white font-semibold mb-3 flex items-center gap-2">
-                <Scan size={18} className="text-blue-400" />
-                OCR Enhancement
+                <Briefcase size={18} className="text-blue-400" />
+                Business Data Focus
               </h3>
               <p className="text-xs mb-4 text-slate-400 leading-relaxed">
-                By integrating a dedicated OCR library, we extract text layers from digital PDFs and perform deep scans on images before AI analysis.
+                Extracting product names, references, quantities, and financial totals while ignoring non-business file metadata.
               </p>
               <ul className="text-[11px] space-y-2 list-none text-slate-300">
                 <li className="flex items-start gap-2">
                    <CheckCircle2 size={12} className="text-blue-500 mt-0.5 shrink-0" />
-                   <span>Resolves ambiguities in blurry dates & numbers.</span>
+                   <span>SKUs and Product References</span>
                 </li>
                 <li className="flex items-start gap-2">
                    <CheckCircle2 size={12} className="text-blue-500 mt-0.5 shrink-0" />
-                   <span>Extracts invisible text metadata from PDFs.</span>
+                   <span>Quantities and Unit Prices</span>
                 </li>
                 <li className="flex items-start gap-2">
                    <CheckCircle2 size={12} className="text-blue-500 mt-0.5 shrink-0" />
-                   <span>Perfect spelling for handwritten or unique names.</span>
+                   <span>Invoice Totals and Tax Details</span>
                 </li>
               </ul>
             </div>
@@ -628,11 +640,11 @@ const App: React.FC = () => {
               <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-white">
                 <h2 className="text-lg font-semibold flex items-center gap-2">
                   <TableIcon size={20} className="text-slate-500" />
-                  Consolidated Spreadsheet
+                  Extracted Records
                 </h2>
                 {data.length > 0 && (
                   <span className="text-[10px] font-bold bg-blue-50 text-blue-600 px-3 py-1 rounded-full border border-blue-100 uppercase">
-                    {data.length} Extracted Rows
+                    {data.length} Rows
                   </span>
                 )}
               </div>
@@ -640,31 +652,23 @@ const App: React.FC = () => {
               <div className="flex-1 overflow-auto bg-slate-50/30">
                 {status === ExtractionStatus.IDLE && files.length === 0 && (
                   <div className="h-full flex flex-col items-center justify-center p-12 text-slate-400">
-                    <div className="w-16 h-16 bg-white rounded-2xl border border-slate-100 flex items-center justify-center mb-4 shadow-sm">
-                      <TableIcon size={32} strokeWidth={1.2} className="opacity-30" />
-                    </div>
-                    <p className="text-lg font-medium text-slate-600">Queue is empty</p>
-                    <p className="text-sm max-w-xs text-center">Add documents or scan via camera to start the multi-stage OCR and extraction process.</p>
+                    <TableIcon size={32} strokeWidth={1.2} className="opacity-30 mb-4" />
+                    <p className="text-lg font-medium text-slate-600">No data extracted yet</p>
+                    <p className="text-sm max-w-xs text-center">Add or scan documents to see extracted product and transactional data here.</p>
                   </div>
                 )}
 
                 {status === ExtractionStatus.PROCESSING && data.length === 0 && (
                   <div className="h-full flex flex-col items-center justify-center p-12 space-y-5">
-                    <div className="relative p-4 bg-white rounded-full shadow-lg border border-slate-100">
-                      <Loader2 size={48} className="animate-spin text-blue-500" />
-                      <Scan size={24} className="absolute inset-0 m-auto text-blue-600 animate-pulse" />
-                    </div>
-                    <div className="text-center">
-                      <p className="text-lg font-bold text-slate-800">Advanced Data Extraction</p>
-                      <p className="text-sm text-slate-500 font-medium">Running Tesseract OCR & Gemini AI Vision...</p>
-                    </div>
+                    <Loader2 size={48} className="animate-spin text-blue-500" />
+                    <p className="text-sm text-slate-500 font-medium">Extracting clean business data...</p>
                   </div>
                 )}
 
                 {data.length > 0 ? (
                   <div className="overflow-x-auto relative">
                     <table className="w-full text-left text-sm border-collapse">
-                      <thead className="sticky top-0 z-10 shadow-sm">
+                      <thead className="sticky top-0 z-10">
                         <tr className="bg-slate-50 border-b border-slate-200">
                           {originalHeaders.map(header => (
                             <th key={header} className="px-6 py-4 font-bold text-slate-700 uppercase tracking-wider whitespace-nowrap text-[10px] bg-slate-50/95 backdrop-blur-sm">
@@ -675,20 +679,13 @@ const App: React.FC = () => {
                       </thead>
                       <tbody className="divide-y divide-slate-100 bg-white">
                         {data.map((row, idx) => (
-                          <tr key={idx} className="hover:bg-blue-50/40 transition-colors group">
+                          <tr key={idx} className="hover:bg-blue-50/40 transition-colors">
                             {originalHeaders.map(header => (
                               <td key={`${idx}-${header}`} className="px-6 py-4 text-slate-600 whitespace-nowrap text-[13px]">
-                                {header === 'Source_File' ? (
-                                  <div className="flex items-center gap-2 font-semibold text-slate-800">
-                                    <FileText size={14} className="text-blue-500 opacity-60" />
-                                    {row[header]}
-                                  </div>
+                                {row[header] === 'N/A' || row[header] === null ? (
+                                  <span className="text-slate-300 italic opacity-60">N/A</span>
                                 ) : (
-                                  row[header] === 'N/A' || row[header] === null ? (
-                                    <span className="text-slate-300 italic opacity-60">N/A</span>
-                                  ) : (
-                                    row[header]
-                                  )
+                                  row[header]
                                 )}
                               </td>
                             ))}
@@ -703,22 +700,6 @@ const App: React.FC = () => {
           </div>
         </div>
       </main>
-      
-      <style>{`
-        .custom-scrollbar::-webkit-scrollbar {
-          width: 5px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-track {
-          background: transparent;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb {
-          background: #e2e8f0;
-          border-radius: 10px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-          background: #cbd5e1;
-        }
-      `}</style>
     </div>
   );
 };
