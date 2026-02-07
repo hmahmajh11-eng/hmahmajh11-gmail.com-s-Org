@@ -1,5 +1,5 @@
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { 
   FileUp, 
   Download, 
@@ -11,7 +11,10 @@ import {
   FileText,
   Files,
   X,
-  Scan
+  Scan,
+  Camera,
+  RotateCcw,
+  Check
 } from 'lucide-react';
 import { ExtractionStatus, ExtractedItem, FileData } from './types';
 import { extractDataFromDocument } from './services/geminiService';
@@ -22,6 +25,169 @@ interface FileDataExtended extends FileData {
   ocrStatus?: 'idle' | 'running' | 'done' | 'skipped' | 'error';
 }
 
+const CameraModal: React.FC<{
+  onCapture: (base64: string) => void;
+  onClose: () => void;
+}> = ({ onCapture, onClose }) => {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [stream, setStream] = useState<MediaStream | null>(null);
+  const [capturedImage, setCapturedImage] = useState<string | null>(null);
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+  const [currentDevice, setCurrentDevice] = useState<string>('');
+
+  useEffect(() => {
+    const initCamera = async () => {
+      try {
+        const allDevices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = allDevices.filter(d => d.kind === 'videoinput');
+        setDevices(videoDevices);
+        
+        // Prefer back camera on mobile
+        const backCamera = videoDevices.find(d => d.label.toLowerCase().includes('back')) || videoDevices[0];
+        if (backCamera) setCurrentDevice(backCamera.deviceId);
+
+        const newStream = await navigator.mediaDevices.getUserMedia({
+          video: { 
+            deviceId: backCamera ? { exact: backCamera.deviceId } : undefined,
+            facingMode: backCamera ? undefined : 'environment',
+            width: { ideal: 1920 },
+            height: { ideal: 1080 }
+          }
+        });
+        setStream(newStream);
+        if (videoRef.current) videoRef.current.srcObject = newStream;
+      } catch (err) {
+        console.error("Camera error:", err);
+      }
+    };
+    initCamera();
+
+    return () => {
+      stream?.getTracks().forEach(track => track.stop());
+    };
+  }, []);
+
+  const switchCamera = async () => {
+    if (devices.length < 2) return;
+    const currentIndex = devices.findIndex(d => d.deviceId === currentDevice);
+    const nextIndex = (currentIndex + 1) % devices.length;
+    const nextDevice = devices[nextIndex];
+    setCurrentDevice(nextDevice.deviceId);
+
+    stream?.getTracks().forEach(track => track.stop());
+    const newStream = await navigator.mediaDevices.getUserMedia({
+      video: { deviceId: { exact: nextDevice.deviceId } }
+    });
+    setStream(newStream);
+    if (videoRef.current) videoRef.current.srcObject = newStream;
+  };
+
+  const capture = () => {
+    if (!videoRef.current || !canvasRef.current) return;
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const base64 = canvas.toDataURL('image/jpeg', 0.85);
+    setCapturedImage(base64);
+  };
+
+  const confirmCapture = () => {
+    if (capturedImage) {
+      onCapture(capturedImage.split(',')[1]);
+      onClose();
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[100] bg-slate-900/95 backdrop-blur-sm flex flex-col items-center justify-center p-4">
+      <div className="relative w-full max-w-2xl bg-black rounded-3xl overflow-hidden shadow-2xl border border-white/10 aspect-[3/4] sm:aspect-video flex flex-col">
+        <button 
+          onClick={onClose}
+          className="absolute top-4 right-4 z-10 bg-black/40 hover:bg-black/60 text-white p-2 rounded-full backdrop-blur-md transition-colors"
+        >
+          <X size={20} />
+        </button>
+
+        {!capturedImage ? (
+          <div className="relative flex-1 bg-black flex items-center justify-center overflow-hidden">
+            <video 
+              ref={videoRef} 
+              autoPlay 
+              playsInline 
+              className="w-full h-full object-cover"
+            />
+            {/* Scanning overlay */}
+            <div className="absolute inset-0 border-[2px] border-white/20 m-12 rounded-xl flex items-center justify-center pointer-events-none">
+              <div className="absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 border-blue-500 rounded-tl-lg" />
+              <div className="absolute top-0 right-0 w-8 h-8 border-t-4 border-r-4 border-blue-500 rounded-tr-lg" />
+              <div className="absolute bottom-0 left-0 w-8 h-8 border-b-4 border-l-4 border-blue-500 rounded-bl-lg" />
+              <div className="absolute bottom-0 right-0 w-8 h-8 border-b-4 border-r-4 border-blue-500 rounded-br-lg" />
+              <div className="w-full h-[2px] bg-blue-500/50 shadow-[0_0_15px_rgba(59,130,246,0.8)] animate-scan" />
+            </div>
+            
+            <div className="absolute bottom-8 left-0 right-0 flex items-center justify-center gap-6 px-4">
+              {devices.length > 1 && (
+                <button 
+                  onClick={switchCamera}
+                  className="p-4 bg-white/10 hover:bg-white/20 text-white rounded-full backdrop-blur-md transition-all"
+                >
+                  <RotateCcw size={24} />
+                </button>
+              )}
+              <button 
+                onClick={capture}
+                className="w-16 h-16 bg-white rounded-full border-[4px] border-blue-500/50 flex items-center justify-center group active:scale-95 transition-all shadow-lg"
+              >
+                <div className="w-12 h-12 bg-white rounded-full border-[2px] border-slate-200 group-hover:bg-slate-50 transition-colors" />
+              </button>
+              <div className="w-14" /> {/* Spacer to center the capture button if switch exists */}
+            </div>
+          </div>
+        ) : (
+          <div className="relative flex-1 bg-black flex flex-col items-center justify-center">
+            <img src={capturedImage} className="w-full h-full object-contain" alt="Captured document" />
+            <div className="absolute bottom-8 flex gap-4">
+              <button 
+                onClick={() => setCapturedImage(null)}
+                className="bg-slate-800 hover:bg-slate-700 text-white px-6 py-3 rounded-full font-semibold flex items-center gap-2 transition-all shadow-lg"
+              >
+                <RotateCcw size={18} />
+                Retake
+              </button>
+              <button 
+                onClick={confirmCapture}
+                className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-full font-semibold flex items-center gap-2 transition-all shadow-lg"
+              >
+                <Check size={18} />
+                Use Photo
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+      <canvas ref={canvasRef} className="hidden" />
+      
+      <p className="mt-4 text-white/60 text-sm font-medium">Position your document within the frame</p>
+
+      <style>{`
+        @keyframes scan {
+          0% { top: 10%; }
+          100% { top: 90%; }
+        }
+        .animate-scan {
+          position: absolute;
+          animation: scan 3s linear infinite alternate;
+        }
+      `}</style>
+    </div>
+  );
+};
+
 const App: React.FC = () => {
   const [files, setFiles] = useState<FileDataExtended[]>([]);
   const [status, setStatus] = useState<ExtractionStatus>(ExtractionStatus.IDLE);
@@ -29,6 +195,7 @@ const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [currentFileIndex, setCurrentFileIndex] = useState<number>(-1);
   const [isOcrEnabled, setIsOcrEnabled] = useState<boolean>(true);
+  const [showCamera, setShowCamera] = useState<boolean>(false);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFiles = e.target.files;
@@ -40,21 +207,32 @@ const App: React.FC = () => {
       const reader = new FileReader();
       reader.onload = () => {
         const base64 = (reader.result as string).split(',')[1];
-        const fileData: FileDataExtended = {
-          id: Math.random().toString(36).substr(2, 9),
-          base64,
-          mimeType: selectedFile.type,
-          name: selectedFile.name,
-          status: 'pending',
-          ocrStatus: 'idle'
-        };
-        setFiles(prev => [...prev, fileData]);
+        addFileToQueue(base64, selectedFile.type, selectedFile.name);
       };
       reader.readAsDataURL(selectedFile);
     });
     
     setError(null);
     setStatus(ExtractionStatus.IDLE);
+  };
+
+  const addFileToQueue = (base64: string, mimeType: string, name: string) => {
+    const fileData: FileDataExtended = {
+      id: Math.random().toString(36).substr(2, 9),
+      base64,
+      mimeType,
+      name,
+      status: 'pending',
+      ocrStatus: 'idle'
+    };
+    setFiles(prev => [...prev, fileData]);
+    setError(null);
+    setStatus(ExtractionStatus.IDLE);
+  };
+
+  const handleCameraCapture = (base64: string) => {
+    const timestamp = new Date().toLocaleTimeString().replace(/:/g, '-');
+    addFileToQueue(base64, 'image/jpeg', `Camera_Scan_${timestamp}.jpg`);
   };
 
   const removeFile = (id: string) => {
@@ -130,6 +308,13 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 pb-12">
+      {showCamera && (
+        <CameraModal 
+          onCapture={handleCameraCapture} 
+          onClose={() => setShowCamera(false)} 
+        />
+      )}
+
       <header className="bg-white border-b border-slate-200 sticky top-0 z-20">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -181,21 +366,32 @@ const App: React.FC = () => {
                 Document Queue
               </h2>
               
-              <div className="relative group mb-6">
-                <input
-                  type="file"
-                  onChange={handleFileUpload}
-                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20"
-                  accept="image/*,.pdf"
-                  multiple
-                />
-                <div className="border-2 border-dashed border-slate-300 rounded-xl p-6 text-center group-hover:border-blue-400 transition-colors bg-slate-50 group-hover:bg-blue-50/30">
-                  <div className="mx-auto w-10 h-10 bg-blue-50 text-blue-500 rounded-full flex items-center justify-center mb-2 group-hover:scale-110 transition-transform">
-                    <FileUp size={20} />
+              <div className="grid grid-cols-2 gap-3 mb-6">
+                <div className="relative group">
+                  <input
+                    type="file"
+                    onChange={handleFileUpload}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20"
+                    accept="image/*,.pdf"
+                    multiple
+                  />
+                  <div className="h-full border-2 border-dashed border-slate-300 rounded-xl p-4 text-center group-hover:border-blue-400 transition-all bg-slate-50 group-hover:bg-blue-50/30">
+                    <div className="mx-auto w-8 h-8 bg-blue-50 text-blue-500 rounded-full flex items-center justify-center mb-2 group-hover:scale-110 transition-transform">
+                      <FileUp size={16} />
+                    </div>
+                    <p className="text-[11px] font-bold text-slate-600 uppercase tracking-tight">Upload Files</p>
                   </div>
-                  <p className="text-sm font-medium text-slate-600">Drop or Add Files</p>
-                  <p className="text-[10px] text-slate-400 mt-1 uppercase tracking-tight">PDF, PNG, JPG, WEBP</p>
                 </div>
+
+                <button 
+                  onClick={() => setShowCamera(true)}
+                  className="group h-full border-2 border-dashed border-slate-300 rounded-xl p-4 text-center hover:border-blue-400 transition-all bg-slate-50 hover:bg-blue-50/30"
+                >
+                  <div className="mx-auto w-8 h-8 bg-blue-50 text-blue-500 rounded-full flex items-center justify-center mb-2 group-hover:scale-110 transition-transform">
+                    <Camera size={16} />
+                  </div>
+                  <p className="text-[11px] font-bold text-slate-600 uppercase tracking-tight">Scan via Camera</p>
+                </button>
               </div>
 
               <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
@@ -331,7 +527,7 @@ const App: React.FC = () => {
                       <TableIcon size={32} strokeWidth={1.2} className="opacity-30" />
                     </div>
                     <p className="text-lg font-medium text-slate-600">Queue is empty</p>
-                    <p className="text-sm max-w-xs text-center">Add documents to start the multi-stage OCR and extraction process.</p>
+                    <p className="text-sm max-w-xs text-center">Add documents or scan via camera to start the multi-stage OCR and extraction process.</p>
                   </div>
                 )}
 

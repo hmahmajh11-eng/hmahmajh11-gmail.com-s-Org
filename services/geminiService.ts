@@ -3,33 +3,31 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { ExtractionResponse } from "../types";
 
 const SYSTEM_INSTRUCTION = `
-You are a precise Data Extraction Specialist. Your goal is to analyze uploaded files (images, PDFs, documents) and extract specific information with 100% accuracy for spreadsheet organization.
+You are an elite, high-precision Data Extraction Specialist. Your mission is to perform EXHAUSTIVE extraction from documents (invoices, receipts, forms, reports) with 100% fidelity.
 
-Task:
-1. Analyze the provided document thoroughly.
-2. Identify key data points such as dates, names, amounts, invoice numbers, or any recurring table data.
-3. Handle "unstructured" text by categorizing it into the most logical column headers.
-4. If data is missing or illegible, return "N/A" for that field.
+CRITICAL RULES FOR EXTRACTION:
+1. NO OMISSIONS: You must extract EVERY single data point found. If an invoice has 50 line items, you must produce 50 rows. Do not summarize or say "See original".
+2. DENORMALIZATION: For spreadsheets, every row must be self-contained. If a document has "header" info (e.g., Invoice Number, Date, Vendor Name, Total Amount) and multiple "line items", you MUST include the header info in EVERY object in the "extracted_data" array.
+3. EXACT TEXT: Transfer text exactly as it appears. Do not fix typos found in the document, do not reformat dates unless they are ambiguous, and do not change currency symbols.
+4. UNSTRUCTURED DATA: If you find relevant information in the margins, footers, or notes, create logical columns for them (e.g., "Notes", "Terms_and_Conditions").
+5. OCR FUSION: If supplemental OCR text is provided, use it to cross-reference and verify visual findings. If an image is blurry but the OCR text provides a clear string, use the OCR string for accuracy.
+6. MISSING DATA: Use "N/A" only if a specific field is absolutely not present in the document.
 
-Supplemental Information:
-You may be provided with an OCR (Optical Character Recognition) text layer extracted from the document. Use this text to verify and "anchor" your visual findings. If the visual quality is low but the OCR text is clear, prioritize the OCR text for spelling and exact numbers.
-
-Output Format:
-You must output the data ONLY in a valid JSON format. This allows the application to easily convert your response into an .xlsx file. Use the following structure:
+JSON STRUCTURE:
+Return ONLY a JSON object with this exact structure:
 {
   "extracted_data": [
     {
-      "column_header_1": "value",
-      "column_header_2": "value"
-    }
+      "Global_Header_1": "Value",
+      "Line_Item_Field_A": "Value",
+      "Line_Item_Field_B": "Value"
+    },
+    ...
   ]
 }
 
-Rules:
-- Do not include any conversational text, pleasantries, or explanations.
-- Only output the JSON block.
-- Maintain the original data types (e.g., do not turn "100.00" into "one hundred").
-- If multiple items exist (like line items on a receipt), create a separate object in the array for each item.
+Ensure all column keys are descriptive and use snake_case or PascalCase consistently.
+Do not provide any preamble, markdown code blocks, or post-extraction commentary. Just the JSON.
 `;
 
 export const extractDataFromDocument = async (
@@ -50,16 +48,16 @@ export const extractDataFromDocument = async (
 
   if (ocrText && ocrText.trim()) {
     parts.push({
-      text: `SUPPLEMENTAL OCR TEXT LAYER (FOR REFERENCE):\n\n${ocrText}`
+      text: `SUPPLEMENTAL OCR TEXT LAYER (FOR REFERENCE AND VERIFICATION):\n\n${ocrText}`
     });
   }
 
   parts.push({
-    text: "Extract all structured information from this document as per your instructions. Use the supplemental OCR text to improve accuracy if provided.",
+    text: "MANDATORY: Extract ALL data from this document. Do not leave out any details, line items, or small-print information. Denormalize all global headers into every row of the line items.",
   });
 
   const response = await ai.models.generateContent({
-    model: 'gemini-3-flash-preview',
+    model: 'gemini-3-pro-preview', // Upgraded to Pro for maximum extraction accuracy
     contents: [
       {
         parts: parts,
@@ -68,6 +66,7 @@ export const extractDataFromDocument = async (
     config: {
       systemInstruction: SYSTEM_INSTRUCTION,
       responseMimeType: "application/json",
+      temperature: 0.1, // Low temperature for high precision
     },
   });
 
@@ -75,10 +74,11 @@ export const extractDataFromDocument = async (
   if (!text) throw new Error("Empty response from AI");
   
   try {
+    // Robust cleaning of the response string
     const jsonString = text.trim().replace(/^```json\s*|```$/g, '');
     return JSON.parse(jsonString) as ExtractionResponse;
   } catch (error) {
     console.error("Failed to parse JSON response:", text);
-    throw new Error("Invalid response format from AI. Please try again with a clearer document.");
+    throw new Error("The AI failed to generate a valid structured response. Please try with a higher-quality image or different document.");
   }
 };
