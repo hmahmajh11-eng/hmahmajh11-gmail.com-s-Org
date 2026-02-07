@@ -1,0 +1,7 @@
+{
+  "name": "DocuExtract Pro",
+  "description": "A high-precision data extraction tool that transforms unstructured documents, receipts, and invoices into structured spreadsheet-ready data using Gemini AI.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
