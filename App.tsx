@@ -14,7 +14,9 @@ import {
   Scan,
   Camera,
   RotateCcw,
-  Check
+  Check,
+  Settings2,
+  Save
 } from 'lucide-react';
 import { ExtractionStatus, ExtractedItem, FileData } from './types';
 import { extractDataFromDocument } from './services/geminiService';
@@ -24,6 +26,71 @@ import { extractTextFromPdf, performImageOcr } from './utils/ocrUtils';
 interface FileDataExtended extends FileData {
   ocrStatus?: 'idle' | 'running' | 'done' | 'skipped' | 'error';
 }
+
+const MappingModal: React.FC<{
+  headers: string[];
+  mapping: Record<string, string>;
+  onSave: (newMapping: Record<string, string>) => void;
+  onClose: () => void;
+}> = ({ headers, mapping, onSave, onClose }) => {
+  const [localMapping, setLocalMapping] = useState<Record<string, string>>({ ...mapping });
+
+  const handleChange = (original: string, updated: string) => {
+    setLocalMapping(prev => ({ ...prev, [original]: updated }));
+  };
+
+  return (
+    <div className="fixed inset-0 z-[110] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
+        <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+          <div>
+            <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+              <Settings2 size={20} className="text-blue-500" />
+              Column Mapping
+            </h3>
+            <p className="text-xs text-slate-500">Rename extracted headers for your final spreadsheet</p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 p-1">
+            <X size={20} />
+          </button>
+        </div>
+        
+        <div className="flex-1 overflow-y-auto p-6 space-y-4">
+          {headers.map(header => (
+            <div key={header} className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider px-1">
+                Original: <span className="text-slate-600 font-mono lowercase">{header}</span>
+              </label>
+              <input
+                type="text"
+                value={localMapping[header] || header}
+                onChange={(e) => handleChange(header, e.target.value)}
+                placeholder={header}
+                className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all text-sm font-medium text-slate-700"
+              />
+            </div>
+          ))}
+        </div>
+
+        <div className="p-6 border-t border-slate-100 flex gap-3">
+          <button
+            onClick={onClose}
+            className="flex-1 py-3 px-4 rounded-xl border border-slate-200 text-slate-600 font-semibold hover:bg-slate-50 transition-all text-sm"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => onSave(localMapping)}
+            className="flex-1 py-3 px-4 rounded-xl bg-blue-600 text-white font-semibold hover:bg-blue-700 transition-all shadow-md shadow-blue-200 flex items-center justify-center gap-2 text-sm"
+          >
+            <Save size={18} />
+            Apply Changes
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 const CameraModal: React.FC<{
   onCapture: (base64: string) => void;
@@ -43,7 +110,6 @@ const CameraModal: React.FC<{
         const videoDevices = allDevices.filter(d => d.kind === 'videoinput');
         setDevices(videoDevices);
         
-        // Prefer back camera on mobile
         const backCamera = videoDevices.find(d => d.label.toLowerCase().includes('back')) || videoDevices[0];
         if (backCamera) setCurrentDevice(backCamera.deviceId);
 
@@ -121,7 +187,6 @@ const CameraModal: React.FC<{
               playsInline 
               className="w-full h-full object-cover"
             />
-            {/* Scanning overlay */}
             <div className="absolute inset-0 border-[2px] border-white/20 m-12 rounded-xl flex items-center justify-center pointer-events-none">
               <div className="absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 border-blue-500 rounded-tl-lg" />
               <div className="absolute top-0 right-0 w-8 h-8 border-t-4 border-r-4 border-blue-500 rounded-tr-lg" />
@@ -145,7 +210,7 @@ const CameraModal: React.FC<{
               >
                 <div className="w-12 h-12 bg-white rounded-full border-[2px] border-slate-200 group-hover:bg-slate-50 transition-colors" />
               </button>
-              <div className="w-14" /> {/* Spacer to center the capture button if switch exists */}
+              <div className="w-14" />
             </div>
           </div>
         ) : (
@@ -196,6 +261,8 @@ const App: React.FC = () => {
   const [currentFileIndex, setCurrentFileIndex] = useState<number>(-1);
   const [isOcrEnabled, setIsOcrEnabled] = useState<boolean>(true);
   const [showCamera, setShowCamera] = useState<boolean>(false);
+  const [headerMapping, setHeaderMapping] = useState<Record<string, string>>({});
+  const [showMappingModal, setShowMappingModal] = useState<boolean>(false);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFiles = e.target.files;
@@ -240,6 +307,7 @@ const App: React.FC = () => {
     if (files.length <= 1) {
       setData([]);
       setStatus(ExtractionStatus.IDLE);
+      setHeaderMapping({});
     }
   };
 
@@ -292,6 +360,32 @@ const App: React.FC = () => {
     setData(allExtractedData);
     setStatus(ExtractionStatus.SUCCESS);
     setCurrentFileIndex(-1);
+
+    // Initialize mapping with defaults
+    if (allExtractedData.length > 0) {
+      const keys = Object.keys(allExtractedData[0]);
+      const initialMapping: Record<string, string> = {};
+      keys.forEach(k => {
+        initialMapping[k] = k;
+      });
+      setHeaderMapping(initialMapping);
+    }
+  };
+
+  const handleExport = () => {
+    if (data.length === 0) return;
+
+    // Apply mapping to data
+    const mappedData = data.map(item => {
+      const newItem: ExtractedItem = {};
+      Object.keys(item).forEach(key => {
+        const mappedKey = headerMapping[key] || key;
+        newItem[mappedKey] = item[key];
+      });
+      return newItem;
+    });
+
+    downloadAsExcel(mappedData, `Batch_Extraction_${new Date().toISOString().split('T')[0]}.xlsx`);
   };
 
   const reset = () => {
@@ -300,9 +394,10 @@ const App: React.FC = () => {
     setStatus(ExtractionStatus.IDLE);
     setError(null);
     setCurrentFileIndex(-1);
+    setHeaderMapping({});
   };
 
-  const headers = data.length > 0 
+  const originalHeaders = data.length > 0 
     ? Array.from(new Set(['Source_File', ...Object.keys(data[0]).filter(k => k !== 'Source_File')])) 
     : [];
 
@@ -312,6 +407,18 @@ const App: React.FC = () => {
         <CameraModal 
           onCapture={handleCameraCapture} 
           onClose={() => setShowCamera(false)} 
+        />
+      )}
+
+      {showMappingModal && (
+        <MappingModal
+          headers={originalHeaders}
+          mapping={headerMapping}
+          onSave={(newMapping) => {
+            setHeaderMapping(newMapping);
+            setShowMappingModal(false);
+          }}
+          onClose={() => setShowMappingModal(false)}
         />
       )}
 
@@ -344,13 +451,23 @@ const App: React.FC = () => {
              </button>
             )}
             {data.length > 0 && (
-              <button
-                onClick={() => downloadAsExcel(data, `Batch_Extraction_${new Date().toISOString().split('T')[0]}.xlsx`)}
-                className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg font-medium transition-all shadow-md active:shadow-sm"
-              >
-                <Download size={18} />
-                Export
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setShowMappingModal(true)}
+                  className="flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg font-medium transition-all border border-slate-200"
+                  title="Customize Column Headers"
+                >
+                  <Settings2 size={18} />
+                  <span className="hidden md:inline">Headers</span>
+                </button>
+                <button
+                  onClick={handleExport}
+                  className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg font-medium transition-all shadow-md active:shadow-sm"
+                >
+                  <Download size={18} />
+                  Export
+                </button>
+              </div>
             )}
           </div>
         </div>
@@ -549,9 +666,9 @@ const App: React.FC = () => {
                     <table className="w-full text-left text-sm border-collapse">
                       <thead className="sticky top-0 z-10 shadow-sm">
                         <tr className="bg-slate-50 border-b border-slate-200">
-                          {headers.map(header => (
+                          {originalHeaders.map(header => (
                             <th key={header} className="px-6 py-4 font-bold text-slate-700 uppercase tracking-wider whitespace-nowrap text-[10px] bg-slate-50/95 backdrop-blur-sm">
-                              {header.replace(/_/g, ' ')}
+                              {headerMapping[header] ? headerMapping[header].replace(/_/g, ' ') : header.replace(/_/g, ' ')}
                             </th>
                           ))}
                         </tr>
@@ -559,7 +676,7 @@ const App: React.FC = () => {
                       <tbody className="divide-y divide-slate-100 bg-white">
                         {data.map((row, idx) => (
                           <tr key={idx} className="hover:bg-blue-50/40 transition-colors group">
-                            {headers.map(header => (
+                            {originalHeaders.map(header => (
                               <td key={`${idx}-${header}`} className="px-6 py-4 text-slate-600 whitespace-nowrap text-[13px]">
                                 {header === 'Source_File' ? (
                                   <div className="flex items-center gap-2 font-semibold text-slate-800">
