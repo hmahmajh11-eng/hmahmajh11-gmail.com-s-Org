@@ -368,13 +368,14 @@ const App: React.FC = () => {
         }
 
         const result = await extractDataFromDocument(files[i].base64, files[i].mimeType, ocrText);
-        
-        // No longer adding Source_File to focus on clean data
         allExtractedData.push(...result.extracted_data);
         setFiles(prev => prev.map((f, idx) => idx === i ? { ...f, status: 'completed' } : f));
       } catch (err: any) {
         console.error(`Error processing ${files[i].name}:`, err);
+        setError(`Failed to extract data from ${files[i].name}: ${err.message}`);
         setFiles(prev => prev.map((f, idx) => idx === i ? { ...f, status: 'error' } : f));
+        setStatus(ExtractionStatus.ERROR);
+        return; // Stop processing on critical error
       }
     }
 
@@ -492,6 +493,19 @@ const App: React.FC = () => {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {error && (
+          <div className="mb-8 p-4 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3 text-red-700 animate-in fade-in slide-in-from-top-4">
+            <AlertCircle className="shrink-0 mt-0.5" size={20} />
+            <div className="flex-1">
+              <p className="font-bold text-sm">Extraction Error</p>
+              <p className="text-xs opacity-90">{error}</p>
+            </div>
+            <button onClick={() => setError(null)} className="p-1 hover:bg-red-100 rounded">
+              <X size={16} />
+            </button>
+          </div>
+        )}
+
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
           
           <div className="lg:col-span-4 space-y-6">
