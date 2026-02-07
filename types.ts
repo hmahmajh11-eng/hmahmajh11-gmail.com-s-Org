@@ -8,9 +8,11 @@ export interface ExtractionResponse {
 }
 
 export interface FileData {
+  id: string;
   base64: string;
   mimeType: string;
   name: string;
+  status: 'pending' | 'processing' | 'completed' | 'error';
 }
 
 export enum ExtractionStatus {
